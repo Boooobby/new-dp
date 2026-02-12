@@ -175,11 +175,62 @@ class RevGuidedDiffusion(torch.nn.Module):
             print(f'model_config: {config}')
             model = mutils.create_model(config)
 
+            """
             optimizer = get_optimizer(config, model.parameters())
             ema = ExponentialMovingAverage(model.parameters(), decay=config.model.ema_rate)
             state = dict(step=0, optimizer=optimizer, model=model, ema=ema)
             restore_checkpoint(f'{model_dir}/checkpoint_8.pth', state, device)
             ema.copy_to(model.parameters())
+            """
+
+            # --- 修改开始 ---
+            # 1. 确定权重路径：优先使用 config.model.ckpt，否则使用默认路径
+            if hasattr(config.model, 'ckpt'):
+                ckpt_path = config.model.ckpt
+            else:
+                ckpt_path = os.path.join(model_dir, 'checkpoint_8.pth')
+            
+            print(f"=> Loading checkpoint from: {ckpt_path}")
+
+            # 2. 尝试加载权重
+            device = self.device
+            loaded_state = torch.load(ckpt_path, map_location=device)
+
+            # 情况 A: 如果是标准的 SDE/DiffPure 训练产生的 checkpoint (包含 ema, optimizer 等)
+            if isinstance(loaded_state, dict) and 'ema' in loaded_state:
+                print("=> Detected full checkpoint with EMA. Loading EMA weights...")
+                optimizer = get_optimizer(config, model.parameters())
+                ema = ExponentialMovingAverage(model.parameters(), decay=config.model.ema_rate)
+                state = dict(step=0, optimizer=optimizer, model=model, ema=ema)
+                
+                # 手动执行 restore_checkpoint 的逻辑，避免调用外部函数导致路径死锁
+                # state['optimizer'].load_state_dict(loaded_state['optimizer'])
+                state['model'].load_state_dict(loaded_state['model'], strict=False)
+                state['ema'].load_state_dict(loaded_state['ema'])
+                state['step'] = loaded_state['step']
+                
+                # 将 EMA 权重应用到模型当前参数中
+                ema.copy_to(model.parameters())
+
+            # 情况 B: 如果只是模型权重的 state_dict (例如你自己微调只保存了 model.state_dict())
+            else:
+                print("=> Detected pure model weights (no EMA/Optimizer). Loading directly...")
+                
+                # 处理可能存在的 'module.' 前缀 (DataParallel)
+                if 'model' in loaded_state:
+                    state_dict = loaded_state['model']
+                else:
+                    state_dict = loaded_state
+
+                # 移除 'module.' 前缀
+                new_state_dict = {}
+                for k, v in state_dict.items():
+                    name = k.replace('module.', '') 
+                    new_state_dict[name] = v
+                
+                # 加载参数
+                model.load_state_dict(new_state_dict, strict=False)
+            # --- 修改结束 ---
 
         else:
             raise NotImplementedError(f'Unknown dataset {config.data.dataset}!')

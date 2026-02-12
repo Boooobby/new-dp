@@ -9,3 +9,7 @@ assets/
 dataset/
 
 /models/
+
+*.pt
+
+*.pth
